@@ -1,17 +1,47 @@
-import { Data, DataItem, Route, ViewType } from '@/types';
-import { fetchNewsItems } from './utils';
+import { load } from 'cheerio'; // html parser
 
-export const handler = async (): Promise<Data> => {
-    const rootUrl = 'https://www.iplaysoft.com/';
-    const postApiUrl = `${rootUrl}wp-json/wp/v2/posts?_embed`;
+import type { Data, DataItem, Route } from '@/types';
+import { ViewType } from '@/types';
+import cache from '@/utils/cache';
+import ofetch from '@/utils/ofetch';
+import { parseDate } from '@/utils/parse-date';
+import { getRouteLimit } from '@/utils/route-limit';
+import parser from '@/utils/rss-parser';
 
-    const items: DataItem[] = await fetchNewsItems(postApiUrl);
+export const handler = async (ctx): Promise<Data> => {
+    const feed = await parser.parseURL('https://feed.iplaysoft.com');
+    const limit = getRouteLimit(ctx, 20);
+
+    const filteredItems = feed.items
+        .map((item) => (item.title && item.link && item.pubDate && /.*\.iplaysoft\.com$/.test(new URL(item.link).hostname) ? { ...item, title: item.title, link: item.link, pubDate: item.pubDate } : null))
+        .filter((item) => item !== null)
+        .slice(0, limit);
+
+    const items = await Promise.all(
+        filteredItems.map(async (item): Promise<DataItem> => {
+            const description = await cache.tryGet(`iplaysoft:article:${item.link}`, async () => {
+                const response = await ofetch(item.link);
+                const $ = load(response);
+
+                $('.entry-content').find('div[style*="overflow:hidden"]').remove();
+
+                return $('.entry-content').html();
+            });
+            return {
+                title: item.title,
+                description,
+                link: item.link,
+                author: item.author ?? item.creator,
+                pubDate: parseDate(item.pubDate),
+            };
+        })
+    );
 
     return {
         title: '异次元软件世界',
         description: '软件改变生活',
         language: 'zh-CN',
-        link: rootUrl,
+        link: 'https://www.iplaysoft.com',
         item: items,
     };
 };
@@ -20,11 +50,10 @@ export const route: Route = {
     path: '/',
     name: '首页',
     url: 'www.iplaysoft.com',
-    maintainers: ['williamgateszhao', 'cscnk52'],
+    maintainers: ['kimi360', 'williamgateszhao', 'cscnk52', 'LokHsu'],
     handler,
     example: '/iplaysoft',
-    parameters: undefined,
-    description: undefined,
+    parameters: {},
     categories: ['program-update'],
     features: {
         requireConfig: false,
