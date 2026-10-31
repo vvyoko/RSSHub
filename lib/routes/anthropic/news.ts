@@ -1,7 +1,10 @@
-import ofetch from '@/utils/ofetch';
 import { load } from 'cheerio';
+import pMap from 'p-map';
+
+import type { DataItem, Route } from '@/types';
 import cache from '@/utils/cache';
-import { Route } from '@/types';
+import ofetch from '@/utils/ofetch';
+import { getRouteLimit } from '@/utils/route-limit';
 
 export const route: Route = {
     path: '/news',
@@ -14,40 +17,45 @@ export const route: Route = {
         },
     ],
     name: 'News',
-    maintainers: ['etShaw-zh'],
+    maintainers: ['etShaw-zh', 'goestav'],
     handler,
     url: 'www.anthropic.com/news',
 };
 
-async function handler() {
+async function handler(ctx) {
     const link = 'https://www.anthropic.com/news';
     const response = await ofetch(link);
     const $ = load(response);
+    const limit = getRouteLimit(ctx, 10);
 
-    const list = $('.contentFadeUp a')
+    const list: DataItem[] = $('[data-listing-row]')
         .toArray()
-        .map((e) => {
-            e = $(e);
-            const title = e.find('h3[class^="PostCard_post-heading__"]').text().trim();
-            const href = e.attr('href');
-            const pubDate = e.find('div[class^="PostList_post-date__"]').text().trim();
-            const fullLink = href.startsWith('http') ? href : `https://www.anthropic.com${href}`;
+        .slice(0, limit)
+        .map((el) => {
+            const $el = $(el);
+            const $link = $el.find('a[class$="_title-link"]');
+            const title = $link.text().trim();
+            const href = $link.attr('href') ?? '';
+            const pubDate = $el.find('time').text().trim();
+            const link = href.startsWith('http') ? href : `https://www.anthropic.com${href}`;
             return {
                 title,
-                link: fullLink,
+                link,
                 pubDate,
             };
         });
 
-    const out = await Promise.all(
-        list.map((item) =>
-            cache.tryGet(item.link, async () => {
-                const response = await ofetch(item.link);
+    const out = await pMap(
+        list,
+        (item) =>
+            cache.tryGet(item.link!, async () => {
+                const response = await ofetch(item.link!);
                 const $ = load(response);
 
-                $('div[class^="PostDetail_b-social-share"]').remove();
+                const content = $('#main-content');
 
-                const content = $('div[class*="PostDetail_post-detail__"]');
+                $('[class$="_Header"], [class$="_ConstellationPanelSlot"]').remove();
+
                 content.find('img').each((_, e) => {
                     const $e = $(e);
                     $e.removeAttr('style srcset');
@@ -62,8 +70,8 @@ async function handler() {
                 item.description = content.html();
 
                 return item;
-            })
-        )
+            }),
+        { concurrency: 5 }
     );
 
     return {
